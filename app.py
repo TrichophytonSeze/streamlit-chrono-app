@@ -111,7 +111,7 @@ if uploaded_file is not None:
             color_discrete_map=color_map,
             hover_name="dci",
             hover_data={"dci": False},
-            title="Chronologie des Traitements (Luminosité Relative)"
+            title="Chronologie des Traitements"
         )
 
         # Hauteur par ligne
@@ -170,22 +170,32 @@ if uploaded_file is not None:
         )
 
         st.info(
-            "La couleur indique le DCI (orange/violet/rose/turquoise, répétée si nécessaire), et la luminosité (**clair/foncé**) indique la **Dose** relative à chaque DCI."
+            "La couleur indique la prise de la DCI (répétée si nécessaire), et la luminosité (**clair/foncé**) indique la **dose** relative à chaque dci."
         )
 
-        st.plotly_chart(fig, use_container_width=True)
+        # Choix du format avec clé unique
+        export_format = st.selectbox(
+            "Choisir le format d'export :",
+            ["SVG", "PNG"],
+            key="export_format_selectbox"
+        )
 
-        # --- BOUTON EXPORT PDF ---
-        if st.button("Télécharger PDF"):
-            pdf_buffer = io.BytesIO()
-            pio.write_image(fig, pdf_buffer, format='pdf', width=1200, height=fig_height)
-            pdf_buffer.seek(0)
-            st.download_button(
-                label="Télécharger le PDF",
-                data=pdf_buffer,
-                file_name="timeline.pdf",
-                mime="application/pdf"
-            )
+        # Affichage du graphique Plotly avec barre d'outils
+        st.plotly_chart(
+            fig,
+            use_container_width=True,
+            config={
+                "displayModeBar": True,
+                "modeBarButtonsToAdd": ["toImage"],
+                "toImageButtonOptions": {
+                    "format": export_format.lower(),
+                    "filename": "timeline",
+                    "height": fig_height,
+                    "width": 1200,
+                    "scale": 2
+                }
+            }
+        )
 
     except Exception as e:
         st.error(f"Erreur lors du traitement du fichier : {e}")
