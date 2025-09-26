@@ -8,9 +8,8 @@ from dateutil.relativedelta import relativedelta
 st.set_page_config(layout="wide")
 st.title("Chronologie des Traitements (Python/Streamlit)")
 
-# --- Message info utilisateur ---
 st.info(
-    """La couleur indique la prise de la dci (répétée si nécessaire), "
+    """La couleur indique la prise de la dci (répétée si nécessaire),
     la luminosité (**clair/foncé**) indique la **dose** relative à chaque dci.  
     Possibilité d'exporter (icône **appareil photo** en haut à droite du graphique).  
     Infos (posologie, dates) disponibles au **survol** de la case."""
@@ -22,7 +21,6 @@ uploaded_file = st.sidebar.file_uploader("Choisir fichier Excel/CSV", type=["xls
 st.sidebar.markdown("---")
 st.sidebar.markdown("### Filtre calendrier (par défaut)")
 
-# Calendrier par défaut : 3 derniers mois
 today = pd.Timestamp.today().normalize()
 default_end = today
 default_start = default_end - relativedelta(months=3)
@@ -33,13 +31,19 @@ date_end_input = st.sidebar.date_input("Date de fin", value=default_end)
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("### Filtre relatif")
-number = st.sidebar.number_input("Nombre", min_value=1, value=3, step=1)
+number = st.sidebar.number_input("Nombre", min_value=1, value=14, step=1)
 unit = st.sidebar.selectbox("Unité", ["jour", "semaine", "mois", "année"])
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("### Options d'affichage")
+sort_option = st.sidebar.selectbox(
+    "Ordre des dci",
+    ["Alphabétique", "Chronologique (date début)"],
+    index=1
+)
 height_per_line_px = st.sidebar.slider("Hauteur par barre (px)", 20, 150, 75)
-show_case_text = st.sidebar.checkbox("Afficher le texte dans les cases", value=True)
+show_case_text = st.sidebar.checkbox("Afficher la posologie (dci)", value=True)
+show_ei_text = st.sidebar.checkbox("Afficher le texte dans les cases des EI", value=True)
 case_text_font_size = st.sidebar.slider("Taille texte dans les cases", 8, 20, 10)
 yaxis_font_size = st.sidebar.slider("Taille texte DCI (axe Y)", 8, 20, 12)
 
@@ -49,19 +53,20 @@ if uploaded_file is not None:
         if uploaded_file.name.endswith(".csv"):
             try:
                 df = pd.read_csv(uploaded_file, sep=';')
-            except:
+            except Exception:
                 df = pd.read_csv(uploaded_file, sep=',')
         else:
             df = pd.read_excel(uploaded_file)
 
-        # Nettoyage colonnes
         df.columns = df.columns.str.lower().str.replace('[^a-z0-9_]', '', regex=True).str.replace(' ', '_', regex=True)
         required_cols = ['dci', 'dose', 'frequence', 'date_debut', 'date_fin', 'unite']
         if not all(col in df.columns for col in required_cols):
             st.error(f"Colonnes manquantes. Requises : {', '.join(required_cols)}")
             st.stop()
 
-        # Conversion types
+        if "ei" not in df.columns:
+            df["ei"] = "Non"
+
         df['date_debut'] = pd.to_datetime(df['date_debut'], errors='coerce')
         df['date_fin'] = pd.to_datetime(df['date_fin'], errors='coerce')
         df['dose'] = pd.to_numeric(df['dose'], errors='coerce')
@@ -72,7 +77,7 @@ if uploaded_file is not None:
             date_start_ts = pd.Timestamp(date_start_input)
             date_end_ts = pd.Timestamp(date_end_input)
         else:
-            date_end_ts = today  # TOUJOURS aujourd'hui pour le filtre relatif
+            date_end_ts = today
             if unit == "jour":
                 date_start_ts = today - pd.Timedelta(days=number)
             elif unit == "semaine":
@@ -82,45 +87,63 @@ if uploaded_file is not None:
             elif unit == "année":
                 date_start_ts = today - relativedelta(years=number)
 
-        # Inclure le dernier jour de la période
-        date_end_ts_inclusive = date_end_ts + pd.Timedelta(days=1)
+        fill_value = date_end_ts if use_calendar else today
+        df['date_fin'] = df['date_fin'].fillna(fill_value)
+        display_end_inclusive = date_end_ts + pd.Timedelta(days=1)
 
-        # --- Filtrer DCI présentes dans la période ---
         df_filtered = df[(df['date_fin'] >= date_start_ts) & (df['date_debut'] <= date_end_ts)].copy()
         if df_filtered.empty:
             st.warning("Aucune donnée dans la période sélectionnée.")
             st.stop()
 
-        # Tronquer dates pour affichage
-        df_filtered['date_debut_plot'] = df_filtered['date_debut'].apply(lambda d: max(d, date_start_ts))
+        df_filtered['date_debut_plot'] = df_filtered['date_debut'].where(df_filtered['date_debut'] >= date_start_ts, date_start_ts)
+        df_filtered['date_fin_plot'] = (df_filtered['date_fin'] + pd.Timedelta(days=1)).where(
+            df_filtered['date_fin'] + pd.Timedelta(days=1) <= display_end_inclusive,
+            display_end_inclusive
+        )
 
-        # Ajouter 1 jour pour inclure le dernier jour complet
-        df_filtered['date_fin_plot'] = df_filtered['date_fin'].apply(lambda d: min(d + pd.Timedelta(days=1), date_end_ts + pd.Timedelta(days=1)))
+        # --- EI et tri DCI ---
+        # --- EI et tri DCI ---
+        df_filtered['is_ei'] = df_filtered['ei'].str.strip().str.lower() == "oui"
+        df_filtered['dose'] = df_filtered['dose'].fillna("")
+        df_filtered['frequence'] = df_filtered['frequence'].fillna("")
+        df_filtered['unite'] = df_filtered['unite'].fillna("")
 
-        # --- Normalisation dose pour opacité ---
+        # EI et non-EI séparés
+        ei_df = df_filtered[df_filtered['is_ei']].copy()
+        non_ei_df = df_filtered[~df_filtered['is_ei']].copy()
+
+        # Tri DCI non-EI
+        if sort_option == "Chronologique (date début)":
+            dci_order = non_ei_df.groupby('dci')['date_debut'].min().sort_values().index.tolist()
+        else:  # Alphabétique
+            dci_order = sorted(non_ei_df['dci'].unique())
+
+        ei_names = ei_df['dci'].unique().tolist()
+        y_order = ["⚠️ " + ei for ei in ei_names] + dci_order
+        df_filtered['y_position'] = df_filtered.apply(lambda r: "⚠️ " + r['dci'] if r['is_ei'] else r['dci'], axis=1)
+
+        # --- Normalisation dose pour DCI ---
         df_filtered['Min_Dose_DCI'] = df_filtered.groupby('dci')['dose'].transform('min')
         df_filtered['Max_Dose_DCI'] = df_filtered.groupby('dci')['dose'].transform('max')
         df_filtered['Dose_Range'] = df_filtered['Max_Dose_DCI'] - df_filtered['Min_Dose_DCI']
         df_filtered['Dose_Normalized'] = df_filtered.apply(
-            lambda row: 1.0 if pd.isna(row['Dose_Range']) or row['Dose_Range'] == 0 else (
-                0.4 + 0.6 * (row['dose'] - row['Min_Dose_DCI']) / row['Dose_Range']
-            ),
+            lambda row: 1.0 if pd.isna(row['Dose_Range']) or row['Dose_Range'] == 0 else 0.4 + 0.6 * (
+                        row['dose'] - row['Min_Dose_DCI']) / row['Dose_Range'],
             axis=1
         )
 
         # --- Couleurs ---
-        base_colors = ["#FFD966", "#F4B183", "#FF61C3", "#93C5FD", "#6FCF97"]
-        unique_dci = df_filtered['dci'].unique()
-        color_map = {dci: base_colors[i % len(base_colors)] for i, dci in enumerate(unique_dci)}
-        df_filtered['color'] = df_filtered['dci'].map(color_map)
+        base_colors = ["#FFD966", "#F4B183", "#93C5FD", "#6FCF97", "#FF61C3", "#A0E7E5", "#C7A0FF"]
+        meds = non_ei_df['dci'].unique()
+        color_map = {dci: base_colors[i % len(base_colors)] for i, dci in enumerate(meds)}
+        for ei in ei_names:
+            color_map[ei] = "#f4a6c1"  # rose clair pour EI
 
-        # --- Posologie hover complète ---
+        # --- Posologie texte ---
         df_filtered['Posologie'] = df_filtered.apply(
-            lambda row: (
-                f"{int(row['dose']) if pd.notna(row['dose']) and row['dose'] == int(row['dose']) else row['dose']} "
-                f"{row['unite'] if pd.notna(row['unite']) else ''} "
-                f"{row['frequence'] if pd.notna(row['frequence']) else ''}"
-            ).strip(),
+            lambda
+                r: f"{'' if r['dose'] == '' else int(r['dose']) if r['dose'] == int(r['dose']) else r['dose']} {r['unite']} {r['frequence']}".strip(),
             axis=1
         )
 
@@ -129,39 +152,35 @@ if uploaded_file is not None:
             df_filtered,
             x_start="date_debut_plot",
             x_end="date_fin_plot",
-            y="dci",
+            y="y_position",
             color="dci",
             color_discrete_map=color_map,
             hover_name="dci",
-            title="Chronologie des traitements"
+            category_orders={"y_position": y_order},
+            title="Chronologie des traitements et EI"
         )
 
-        # Hauteur par ligne
-        N = df_filtered['dci'].nunique()
-        fig_height = N * height_per_line_px
-
-        # Layout unique
-        fig.update_layout(
-            height=fig_height,
-            width=1200,
-            margin=dict(t=120, b=50, l=50, r=50),
-            showlegend=False,
-            title=dict(x=0.5, xanchor='center'),
-            yaxis=dict(tickfont=dict(size=yaxis_font_size))
-        )
-
-        fig.update_xaxes(
-            range=[date_start_ts, date_end_ts],
-            tickformat="%d %b %Y",
-            side="top"
-        )
-
-        # --- Annotations texte dans les cases ---
+        # --- Annotations texte dans les cases (posologie) ---
         if show_case_text:
-            for _, row in df_filtered.iterrows():
-                # x_mid recalculé en fonction de la période affichée
-                x_mid = row['date_debut_plot'] + (row['date_fin_plot'] - row['date_debut_plot']) / 2
+            fig_width_px = fig.layout.width if (fig.layout and fig.layout.width) else 1200
+            total_days = (date_end_ts - date_start_ts).days
+            px_per_day = fig_width_px / total_days if total_days > 0 else fig_width_px
 
+            for _, row in df_filtered.iterrows():
+                # Si EI et que l'utilisateur ne veut pas le texte dans les cases, on skip
+                if row['is_ei'] and not show_ei_text:
+                    continue
+
+                start = row['date_debut_plot']
+                end = row['date_fin_plot']
+                if pd.isna(start) or pd.isna(end) or end <= start:
+                    continue
+
+                # Milieu de la barre affichée
+                x_mid = start + (end - start) / 2
+                y_pos = row['y_position']
+
+                # Texte posologie
                 dose_val = row.get('dose')
                 dose_text = "" if pd.isna(dose_val) else (
                     str(int(dose_val)) if dose_val == int(dose_val) else str(dose_val))
@@ -169,96 +188,98 @@ if uploaded_file is not None:
                 freq_val = "" if pd.isna(row.get('frequence')) else str(row['frequence'])
                 text = f"{dose_text} {unite_val} {freq_val}".strip()
 
-                # Largeur de la barre calculée sur la période affichée
-                bar_width_days = (row['date_fin_plot'] - row['date_debut_plot']).days + 1
-                bar_width_px = bar_width_days * 10  # estimation simple
+                # Largeur de la barre affichée en pixels
+                bar_width_days = (end - start).days
+                bar_width_px = max(0, bar_width_days) * px_per_day
+                text_px_est = len(text) * case_text_font_size * 0.6 if text else 0
 
-                if text and bar_width_px >= len(text) * case_text_font_size:
+                # Affiche le texte seulement si ça rentre
+                if text and bar_width_px >= text_px_est:
                     fig.add_annotation(
                         x=x_mid,
-                        y=row['dci'],
+                        y=y_pos,
                         text=text,
                         showarrow=False,
                         font=dict(size=case_text_font_size, color="black"),
-                        align="center"
+                        align="center",
+                        xanchor="center",
+                        yanchor="middle"
                     )
 
-        # --- Hover complet ---
+        N = df_filtered['y_position'].nunique()
+        fig_height = max(300, N * height_per_line_px)
+        fig.update_layout(height=fig_height, width=1200, margin=dict(t=120, b=50, l=50, r=50),
+                          showlegend=False, yaxis_title="dci",
+                          title=dict(x=0.5, xanchor='center'),
+                          yaxis=dict(tickfont=dict(size=yaxis_font_size)))
+        fig.update_xaxes(range=[date_start_ts, display_end_inclusive], tickformat="%d %b %Y", side="top")
+
+        # --- Ligne séparation EI / DCI ---
+        n_ei = len(ei_names)
+        if n_ei > 0:
+            y_line = N - n_ei - 0.5
+            fig.add_shape(type="line", x0=date_start_ts, x1=display_end_inclusive, y0=y_line, y1=y_line,
+                          line=dict(color="grey", width=1, dash="dot"), xref="x", yref="y", layer="above")
+
+        # --- Barre verticale EI + symboles début/fin ---
+        for ei in ei_names:
+            ei_rows = df_filtered[df_filtered['dci'] == ei]
+            if not ei_rows.empty:
+                ei_start = ei_rows['date_debut_plot'].min()
+                ei_end = ei_rows['date_fin_plot'].max()
+                # Barre verticale semi-transparente couvrant tout l'axe Y
+                fig.add_shape(type="rect", x0=ei_start, x1=ei_end, y0=-0.5, y1=N - 0.5,
+                              fillcolor="rgba(244,166,193,0.2)", line=dict(width=0), layer="below")
+                # Symboles début/fin
+                fig.add_scatter(x=[ei_start, ei_end], y=[N - 0.5, N - 0.5], mode="markers",
+                                marker=dict(symbol="diamond", size=12, color="#f4a6c1"),
+                                showlegend=False, hoverinfo="skip")
+
+        # --- Annotations texte, hover et hachure EI ---
         for trace in fig.data:
-            dci_name = trace.name
-            trace_df = df_filtered[df_filtered['dci'] == dci_name]
-            trace.marker.opacity = trace_df['Dose_Normalized'].tolist()
+            trace_df = df_filtered[df_filtered['dci'] == trace.name]
+            if trace_df.empty: continue
+            if trace.name in ei_names:
+                trace.marker.opacity = 1.0
+                trace.marker.color = "#f4a6c1"
+                trace.marker.pattern = dict(shape="/")  # hachure EI
+            else:
+                try:
+                    trace.marker.opacity = trace_df['Dose_Normalized'].tolist()
+                except:
+                    trace.marker.opacity = float(trace_df['Dose_Normalized'].mean())
             trace.width = 0.8
-            trace.customdata = list(
-                zip(
-                    trace_df['Posologie'],
-                    trace_df['date_debut'].dt.strftime("%d %b %Y"),
-                    trace_df['date_fin'].dt.strftime("%d %b %Y")
-                )
-            )
-            trace.hovertemplate = (
-                "<b>%{y}</b><br>"
-                "Période: %{customdata[1]} à %{customdata[2]}<br>"
-                "Posologie: %{customdata[0]}<extra></extra>"
-            )
+            trace.customdata = list(zip(
+                trace_df['Posologie'],
+                trace_df['date_debut'].dt.strftime("%d %b %Y"),
+                trace_df['date_fin'].dt.strftime("%d %b %Y")
+            ))
+            trace.hovertemplate = "<b>%{y}</b><br>Période: %{customdata[1]} à %{customdata[2]}<br>Posologie: %{customdata[0]}<extra></extra>"
 
-        # Calculer la durée totale en jours
+        # --- Ticks axe X ---
         total_days = (date_end_ts - date_start_ts).days
-
-        # Déterminer la fréquence selon la durée totale
         if total_days <= 14:
-            freq = 'D'  # quotidien
+            freq = 'D'
         elif total_days <= 120:
-            freq = 'W'  # hebdomadaire
-        elif total_days <= 730:  # ~2 ans
-            freq = 'M'  # mensuel
+            freq = 'W'
+        elif total_days <= 730:
+            freq = 'M'
         else:
-            freq = '3M'  # tous les 3 mois
-
-        # Générer les dates des ticks
+            freq = '3M'
         tick_dates = pd.date_range(start=date_start_ts, end=date_end_ts, freq=freq)
-
-        # Mettre à jour l'axe X
-        fig.update_xaxes(
-            tickvals=tick_dates,
-            ticktext=[d.strftime("%d %b") for d in tick_dates],
-            side="top",
-            showgrid=False
-        )
-
-        # Ajouter des lignes verticales légères pour chaque tick
+        fig.update_xaxes(tickvals=tick_dates, ticktext=[d.strftime("%d %b") for d in tick_dates], side="top", showgrid=False)
         for td in tick_dates:
-            fig.add_shape(
-                type="line",
-                x0=td, x1=td,
-                y0=-0.5, y1=len(df_filtered['dci'].unique()) - 0.5,
-                line=dict(color="lightgrey", width=1),
-                layer="below"
-            )
+            fig.add_shape(type="line", x0=td, x1=td, y0=-0.5, y1=N-0.5,
+                          line=dict(color="lightgrey", width=1), layer="below", xref="x", yref="y")
 
-        # Choix du format avec clé unique
-        export_format = st.selectbox(
-            "Choisir le format d'export :",
-            ["SVG", "PNG"],
-            key="export_format_selectbox"
-        )
-
-        # Affichage du graphique Plotly avec barre d'outils
-        st.plotly_chart(
-            fig,
-            use_container_width=True,
-            config={
-                "displayModeBar": True,
-                "modeBarButtonsToAdd": ["toImage"],
-                "toImageButtonOptions": {
-                    "format": export_format.lower(),
-                    "filename": "timeline",
-                    "height": fig_height,
-                    "width": 1200,
-                    "scale": 2
-                }
-            }
-        )
+        # --- Export / affichage ---
+        export_format = st.selectbox("Choisir le format d'export :", ["SVG", "PNG"], key="export_format_selectbox")
+        st.plotly_chart(fig, use_container_width=True, config={
+            "displayModeBar": True,
+            "modeBarButtonsToAdd": ["toImage"],
+            "toImageButtonOptions": {"format": export_format.lower(), "filename": "timeline",
+                                     "height": fig_height, "width": 1200, "scale": 2}
+        })
 
     except Exception as e:
         st.error(f"Erreur lors du traitement du fichier : {e}")
