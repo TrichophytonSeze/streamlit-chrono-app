@@ -59,7 +59,7 @@ if uploaded_file is not None:
             df = pd.read_excel(uploaded_file)
 
         df.columns = df.columns.str.lower().str.replace('[^a-z0-9_]', '', regex=True).str.replace(' ', '_', regex=True)
-        required_cols = ['dci', 'dose', 'frequence', 'date_debut', 'date_fin', 'unite']
+        required_cols = ['dci', 'dose', 'frequence', 'date_debut', 'date_fin', 'unite', 'ei']
         if not all(col in df.columns for col in required_cols):
             st.error(f"Colonnes manquantes. Requises : {', '.join(required_cols)}")
             st.stop()
@@ -103,8 +103,7 @@ if uploaded_file is not None:
         )
 
         # --- EI et tri DCI ---
-        # --- EI et tri DCI ---
-        df_filtered['is_ei'] = df_filtered['ei'].str.strip().str.lower() == "oui"
+        df_filtered['is_ei'] = df_filtered['ei'].fillna("").astype(str).str.strip().str.lower() == "oui"
         df_filtered['dose'] = df_filtered['dose'].fillna("")
         df_filtered['frequence'] = df_filtered['frequence'].fillna("")
         df_filtered['unite'] = df_filtered['unite'].fillna("")
