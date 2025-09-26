@@ -170,7 +170,7 @@ if uploaded_file is not None:
         )
 
         st.info(
-            "La couleur indique la prise de la DCI (répétée si nécessaire), et la luminosité (**clair/foncé**) indique la **dose** relative à chaque dci."
+            "La couleur indique la prise de la dci (répétée si nécessaire), et la luminosité (**clair/foncé**) indique la **dose** relative à chaque dci."
         )
 
         # Choix du format avec clé unique
