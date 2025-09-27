@@ -19,7 +19,7 @@ st.info(
 uploaded_file = st.sidebar.file_uploader("Choisir fichier Excel/CSV", type=["xlsx", "csv"])
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("### Filtre calendrier (par défaut)")
+st.sidebar.markdown("### Calendrier (par défaut)")
 
 today = pd.Timestamp.today().normalize()
 default_end = today
@@ -30,7 +30,7 @@ date_start_input = st.sidebar.date_input("Date de début", value=default_start)
 date_end_input = st.sidebar.date_input("Date de fin", value=default_end)
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("### Filtre relatif")
+st.sidebar.markdown("### Derniers X jours/semaines... ")
 number = st.sidebar.number_input("Nombre", min_value=1, value=14, step=1)
 unit = st.sidebar.selectbox("Unité", ["jour", "semaine", "mois", "année"])
 
@@ -46,6 +46,12 @@ show_case_text = st.sidebar.checkbox("Afficher la posologie (dci)", value=True)
 show_ei_text = st.sidebar.checkbox("Afficher le texte dans les cases des EI", value=True)
 case_text_font_size = st.sidebar.slider("Taille texte dans les cases", 8, 20, 10)
 yaxis_font_size = st.sidebar.slider("Taille texte DCI (axe Y)", 8, 20, 12)
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("### Marqueur de date personnalisé")
+show_ref_date = st.sidebar.checkbox("Afficher cette date", value=False)
+offset_days = st.sidebar.number_input("Décalage en jours", min_value=0, max_value=3650, value=0, step=1, help="Appliqué à la date de référence ci-dessous")
+
 
 if uploaded_file is not None:
     try:
@@ -112,9 +118,22 @@ if uploaded_file is not None:
         ei_df = df_filtered[df_filtered['is_ei']].copy()
         non_ei_df = df_filtered[~df_filtered['is_ei']].copy()
 
+        # Mettre la date par défaut avec date du début du premier EI (s'il existe)
+        default_ref_date = ei_df['date_debut'].min().date() if not ei_df.empty else today.date()
+        ref_date_input = st.sidebar.date_input(
+            "Date de référence",
+            value=default_ref_date,
+            help="Date du début du premier EI si présent"
+        )
+
         # Tri DCI non-EI
         if sort_option == "Chronologique (date début)":
-            dci_order = non_ei_df.groupby('dci')['date_debut'].min().sort_values().index.tolist()
+            # Tri par date_debut puis date_fin
+            sorted_df = non_ei_df.groupby('dci').agg(
+                date_debut_min=('date_debut', 'min'),
+                date_fin_max=('date_fin', 'max')
+            ).sort_values(by=['date_debut_min', 'date_fin_max']).reset_index()
+            dci_order = sorted_df['dci'].tolist()
         else:  # Alphabétique
             dci_order = sorted(non_ei_df['dci'].unique())
 
@@ -221,18 +240,71 @@ if uploaded_file is not None:
                           line=dict(color="grey", width=1, dash="dot"), xref="x", yref="y", layer="above")
 
         # --- Barre verticale EI + symboles début/fin ---
-        for ei in ei_names:
-            ei_rows = df_filtered[df_filtered['dci'] == ei]
-            if not ei_rows.empty:
-                ei_start = ei_rows['date_debut_plot'].min()
-                ei_end = ei_rows['date_fin_plot'].max()
-                # Barre verticale semi-transparente couvrant tout l'axe Y
-                fig.add_shape(type="rect", x0=ei_start, x1=ei_end, y0=-0.5, y1=N - 0.5,
-                              fillcolor="rgba(244,166,193,0.2)", line=dict(width=0), layer="below")
-                # Symboles début/fin
-                fig.add_scatter(x=[ei_start, ei_end], y=[N - 0.5, N - 0.5], mode="markers",
-                                marker=dict(symbol="diamond", size=12, color="#f4a6c1"),
-                                showlegend=False, hoverinfo="skip")
+        # --- Rectangle rose à partir du dernier EI uniquement ---
+        # --- Barre verticale EI + rectangle rose derrière les DCI + symboles début/fin EI ---
+        if not ei_names:
+            pass
+        else:
+            # Période globale des EI
+            ei_start = ei_df['date_debut_plot'].min()
+            ei_end = ei_df['date_fin_plot'].max()
+
+            # Limites Y pour englober uniquement les DCI (sous les EI)
+            y0 = 0 - 0.5  # première ligne DCI (juste sous les EI)
+            y1 = N - len(ei_names) - 0.5  # dernière ligne DCI
+
+            # Rectangle rose derrière les DCI
+            fig.add_shape(
+                type="rect",
+                x0=ei_start,
+                x1=ei_end,
+                y0=y0,
+                y1=y1,
+                fillcolor="rgba(244,166,193,0.2)",
+                line=dict(width=0),
+                layer="below",
+                xref="x",
+                yref="y"
+            )
+
+            # Symboles début/fin pour chaque EI
+            for ei in ei_names:
+                ei_rows = df_filtered[df_filtered['dci'] == ei]
+                if ei_rows.empty:
+                    continue
+                ei_start_i = ei_rows['date_debut_plot'].min()
+                ei_end_i = ei_rows['date_fin_plot'].max()
+                fig.add_scatter(
+                    x=[ei_start_i, ei_end_i],
+                    y=[N - 0.5, N - 0.5],
+                    mode="markers",
+                    marker=dict(symbol="diamond", size=12, color="#f4a6c1"),
+                    showlegend=False,
+                    hoverinfo="skip"
+                )
+
+        # Barre verticale pour aider à voir les dci
+        if show_ref_date:
+            try:
+                # Calcul de la date finale (date + offset)
+                ref_date_ts = pd.Timestamp(ref_date_input) - pd.Timedelta(days=int(offset_days))
+                # On trace une ligne verticale fine rouge couvrant tout l'axe Y (comportement identique aux EI)
+                fig.add_shape(
+                    type="line",
+                    x0=ref_date_ts,
+                    x1=ref_date_ts,
+                    y0=-0.5,
+                    y1=N - 0.5,
+                    line=dict(color="#fc6b03", width=2, dash="dot"),
+                    xref="x",
+                    yref="y",
+                    layer="above"
+                )
+                # Optionnel : petit marqueur en haut (décommenter si tu veux)
+                # fig.add_scatter(x=[ref_date_ts], y=[N - 0.4], mode="markers", marker=dict(symbol="line-ns", size=8, color="red"), showlegend=False, hoverinfo="skip")
+            except Exception as e:
+                # En cas d'erreur (mauvaise conversion), on ignore proprement
+                st.warning(f"Impossible de tracer la date de référence : {e}")
 
         # --- Annotations texte, hover et hachure EI ---
         for trace in fig.data:
@@ -253,7 +325,7 @@ if uploaded_file is not None:
                 trace_df['date_debut'].dt.strftime("%d %b %Y"),
                 trace_df['date_fin'].dt.strftime("%d %b %Y")
             ))
-            trace.hovertemplate = "<b>%{y}</b><br>Période: %{customdata[1]} à %{customdata[2]}<br>Posologie: %{customdata[0]}<extra></extra>"
+            trace.hovertemplate = "<b>%{y}</b><br>Période: <b>%{customdata[1]} - %{customdata[2]}</b><br>Posologie: <b>%{customdata[0]}</b><extra></extra>"
 
         # --- Ticks axe X ---
         total_days = (date_end_ts - date_start_ts).days
