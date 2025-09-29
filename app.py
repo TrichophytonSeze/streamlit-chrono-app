@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import io
 from datetime import date
 from dateutil.relativedelta import relativedelta
 
@@ -9,33 +10,64 @@ st.set_page_config(layout="wide")
 st.title("Chronologie des Traitements (Python/Streamlit)")
 
 st.info(
-    """La couleur indique la prise de la dci (répétée si nécessaire),
+    """La couleur indique la période d'administration de la dci,
     la luminosité (**clair/foncé**) indique la **dose** relative à chaque dci.  
     Possibilité d'exporter (icône **appareil photo** en haut à droite du graphique).  
     Infos (posologie, dates) disponibles au **survol** de la case."""
 )
 
+# --- Création du Fichier Excel Test pour le téléchargement ---
+def get_excel_test_file():
+    """
+    Charge le fichier Excel de démonstration et le renvoie sous forme binaire.
+    ASSUREZ-VOUS QUE 'test_data.xlsx' EST DANS LE MÊME DOSSIER QUE CE SCRIPT.
+    """
+    FILE_NAME = "test_chrono.xlsx"
+    try:
+        # 1. Lire le fichier local en tant que DataFrame
+        df_test = pd.read_excel(FILE_NAME)
+
+        # 2. Utiliser un buffer pour le reconvertir en format Excel en mémoire
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            df_test.to_excel(writer, index=False, sheet_name='Données')
+        return output.getvalue()
+    except FileNotFoundError:
+        st.error(f"Le fichier de démonstration '{FILE_NAME}' est introuvable.")
+        return None # Retourne None en cas d'erreur
+    except Exception as e:
+        st.error(f"Erreur lors du traitement du fichier de démonstration : {e}")
+        return None
+
 # --- Sidebar ---
 uploaded_file = st.sidebar.file_uploader("Choisir fichier Excel/CSV", type=["xlsx", "csv"])
+st.sidebar.markdown("##### Fichier d'exemple")
+
+excel_data = get_excel_test_file()
+
+if excel_data is not None:
+    st.sidebar.download_button(
+        label="Télécharger exemple (.xlsx)",
+        data=excel_data,
+        file_name="test_chrono.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("### Calendrier (par défaut)")
-
+st.sidebar.markdown("#### Calendrier (par défaut)")
 today = pd.Timestamp.today().normalize()
 default_end = today
 default_start = default_end - relativedelta(months=3)
-
 use_calendar = st.sidebar.checkbox("Utiliser le calendrier", value=True)
 date_start_input = st.sidebar.date_input("Date de début", value=default_start)
 date_end_input = st.sidebar.date_input("Date de fin", value=default_end)
 
-st.sidebar.markdown("---")
-st.sidebar.markdown("### Derniers X jours/semaines... ")
+st.sidebar.markdown("#### Derniers X jours/semaines... ")
 number = st.sidebar.number_input("Nombre", min_value=1, value=14, step=1)
 unit = st.sidebar.selectbox("Unité", ["jour", "semaine", "mois", "année"])
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("### Options d'affichage")
+st.sidebar.markdown("#### Options d'affichage")
 sort_option = st.sidebar.selectbox(
     "Ordre des dci",
     ["Alphabétique", "Chronologique (date début)"],
@@ -46,11 +78,13 @@ show_case_text = st.sidebar.checkbox("Afficher la posologie (dci)", value=True)
 show_ei_text = st.sidebar.checkbox("Afficher le texte dans les cases des EI", value=True)
 case_text_font_size = st.sidebar.slider("Taille texte dans les cases", 8, 20, 10)
 yaxis_font_size = st.sidebar.slider("Taille texte DCI (axe Y)", 8, 20, 12)
+xaxis_tick_font_size = st.sidebar.slider("Taille police dates (axe X)", 8, 20, 10)
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("### Marqueur de date personnalisé")
+st.sidebar.markdown("#### Marqueur de date personnalisé")
 show_ref_date = st.sidebar.checkbox("Afficher cette date", value=False)
 offset_days = st.sidebar.number_input("Décalage en jours", min_value=0, max_value=3650, value=0, step=1, help="Appliqué à la date de référence ci-dessous")
+
 
 
 if uploaded_file is not None:
@@ -256,11 +290,17 @@ if uploaded_file is not None:
 
         N = df_filtered['y_position'].nunique()
         fig_height = max(300, N * height_per_line_px)
-        fig.update_layout(height=fig_height, width=1200, margin=dict(t=120, b=50, l=50, r=50),
-                          showlegend=False, yaxis_title="dci",
+        fig.update_layout(height=fig_height,
+                          width=1200,
+                          margin=dict(t=120, b=50, l=50, r=50),
+                          showlegend=False,
+                          #yaxis_title="dci",
                           title=dict(x=0.5, xanchor='center'),
                           yaxis=dict(tickfont=dict(size=yaxis_font_size)))
-        fig.update_xaxes(range=[date_start_ts, display_end_inclusive], tickformat="%d %b %Y", side="top")
+        fig.update_xaxes(range=[date_start_ts, display_end_inclusive],
+                         tickformat="%d %b %Y",
+                         side="top",
+                         tickfont=dict(size=xaxis_tick_font_size))
 
         # --- Ligne séparation EI / DCI ---
         n_ei = len(ei_names)
