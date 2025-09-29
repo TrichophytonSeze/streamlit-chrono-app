@@ -141,10 +141,21 @@ if uploaded_file is not None:
         y_order = ["⚠️ " + ei for ei in ei_names] + dci_order
         df_filtered['y_position'] = df_filtered.apply(lambda r: "⚠️ " + r['dci'] if r['is_ei'] else r['dci'], axis=1)
 
+        # S'assurer que 'dose' est un float pour éviter les erreurs de type après filtrage
+        df_filtered['dose'] = pd.to_numeric(df_filtered['dose'], errors='coerce')
+
         # --- Normalisation dose pour DCI ---
         df_filtered['Min_Dose_DCI'] = df_filtered.groupby('dci')['dose'].transform('min')
         df_filtered['Max_Dose_DCI'] = df_filtered.groupby('dci')['dose'].transform('max')
-        df_filtered['Dose_Range'] = df_filtered['Max_Dose_DCI'] - df_filtered['Min_Dose_DCI']
+
+        # On utilise .fillna(0) uniquement pour le calcul de la plage
+        min_doses = df_filtered['Min_Dose_DCI'].fillna(0)
+        max_doses = df_filtered['Max_Dose_DCI'].fillna(0)
+
+
+        #df_filtered['Dose_Range'] = df_filtered['Max_Dose_DCI'] - df_filtered['Min_Dose_DCI']
+        df_filtered['Dose_Range'] = max_doses - min_doses
+
         df_filtered['Dose_Normalized'] = df_filtered.apply(
             lambda row: 1.0 if pd.isna(row['Dose_Range']) or row['Dose_Range'] == 0 else 0.4 + 0.6 * (
                         row['dose'] - row['Min_Dose_DCI']) / row['Dose_Range'],
@@ -159,9 +170,21 @@ if uploaded_file is not None:
             color_map[ei] = "#f4a6c1"  # rose clair pour EI
 
         # --- Posologie texte ---
+        # --- Posologie texte ---
+        # S'assurer que 'dose' est un float pour éviter les erreurs de type après filtrage
+        df_filtered['dose'] = pd.to_numeric(df_filtered['dose'], errors='coerce')
+
         df_filtered['Posologie'] = df_filtered.apply(
-            lambda
-                r: f"{'' if r['dose'] == '' else int(r['dose']) if r['dose'] == int(r['dose']) else r['dose']} {r['unite']} {r['frequence']}".strip(),
+            lambda r: (
+                # Si la dose est NaN (manquante), on affiche juste l'unité et la fréquence
+                f"{r['unite']} {r['frequence']}".strip()
+                if pd.isna(r['dose']) else
+                # Si la dose est un entier (ex: 50.0), on affiche 50
+                f"{int(r['dose'])} {r['unite']} {r['frequence']}".strip()
+                if r['dose'].is_integer() else
+                # Sinon, on affiche le nombre flottant (ex: 0.75)
+                f"{r['dose']} {r['unite']} {r['frequence']}".strip()
+            ),
             axis=1
         )
 
@@ -199,9 +222,16 @@ if uploaded_file is not None:
                 y_pos = row['y_position']
 
                 # Texte posologie
-                dose_val = row.get('dose')
-                dose_text = "" if pd.isna(dose_val) else (
-                    str(int(dose_val)) if dose_val == int(dose_val) else str(dose_val))
+                dose_val = row.get('dose')  # Contient la valeur float ou NaN
+
+                # Utiliser la même logique pour gérer les NaN et les entiers/flottants
+                if pd.isna(dose_val):
+                    dose_text = ""
+                elif dose_val.is_integer():
+                    dose_text = str(int(dose_val))  # Affiche '50' au lieu de '50.0'
+                else:
+                    dose_text = str(dose_val)  # Affiche '0.75'
+
                 unite_val = "" if pd.isna(row.get('unite')) else str(row['unite'])
                 freq_val = "" if pd.isna(row.get('frequence')) else str(row['frequence'])
                 text = f"{dose_text} {unite_val} {freq_val}".strip()
