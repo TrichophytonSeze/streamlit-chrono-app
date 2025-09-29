@@ -304,13 +304,25 @@ if uploaded_file is not None:
                     continue
                 ei_start_i = ei_rows['date_debut_plot'].min()
                 ei_end_i = ei_rows['date_fin_plot'].max()
+                start_date_str = ei_start_i.strftime("%d %b %Y")
+                end_date_str = ei_end_i.strftime("%d %b %Y")
+
+                # Récupérer le nom de l'EI
+                ei_name_display = ei  # Le nom est directement dans la variable de la boucle
+                # Créer la customdata spécifique pour les deux points (Début et Fin)
+                custom_data_points = [
+                    [ei_name_display, f"Début: {start_date_str}"],  # Data pour le point de début
+                    [ei_name_display, f"Fin: {end_date_str}"]  # Data pour le point de fin
+                ]
+
                 fig.add_scatter(
                     x=[ei_start_i, ei_end_i],
                     y=[N - 0.5, N - 0.5],
                     mode="markers",
                     marker=dict(symbol="diamond", size=12, color="#f4a6c1"),
                     showlegend=False,
-                    hoverinfo="skip"
+                    customdata=custom_data_points,
+                    hovertemplate="<b>EI: %{customdata[0]}</b><br>%{customdata[1]}<extra></extra>"
                 )
 
         # Barre verticale pour aider à voir les dci
