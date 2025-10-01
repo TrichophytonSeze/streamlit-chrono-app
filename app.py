@@ -6,6 +6,7 @@ from datetime import date
 from dateutil.relativedelta import relativedelta
 import numpy as np
 from io import BytesIO
+import matplotlib.colors as mcolors
 
 # --- Configuration et Initialisation ---
 st.set_page_config(layout="wide")
@@ -37,106 +38,144 @@ def go_to_upload():
     st.session_state.data_loaded = False
 
 
-# --- UTILS POUR FICHIERS DE DÉMONSTRATION ---
-
-def get_dci_excel_test_file():
-    """Crée un DataFrame de démonstration DCI/EI et le renvoie sous forme binaire."""
-    data = {
-        'DCI': ['DCI A', 'DCI A', 'DCI B', 'EI X', 'DCI C', 'DCI D'],
-        'Dose': [50, 100, 20, np.nan, 75, 10],
-        'Unite': ['mg', 'mg', 'mg', 'UI', 'mg', 'mg'],
-        'Frequence': ['1/j', '1/j', '2/j', 'ponctuelle', '2/s', '1/j'],
-        'Date_Debut': [
-            pd.Timestamp(date.today()) - pd.Timedelta(days=60),
-            pd.Timestamp(date.today()) - pd.Timedelta(days=30),
-            pd.Timestamp(date.today()) - pd.Timedelta(days=15),
-            pd.Timestamp(date.today()) - pd.Timedelta(days=40),
-            pd.Timestamp(date.today()) - pd.Timedelta(days=5),
-            pd.Timestamp(date.today()) - pd.Timedelta(days=50)
-        ],
-        'Date_Fin': [
-            pd.Timestamp(date.today()) - pd.Timedelta(days=35),
-            pd.Timestamp(date.today()),
-            pd.NaT,
-            pd.Timestamp(date.today()) - pd.Timedelta(days=38),
-            pd.NaT,
-            pd.Timestamp(date.today()) - pd.Timedelta(days=20)
-        ],
-        'EI': ['Non', 'Non', 'Non', 'Oui', 'Non', 'Non']
-    }
-    df_test = pd.DataFrame(data)
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        df_test.to_excel(writer, index=False, sheet_name='Données')
-    return output.getvalue()
-
-
-def get_lab_excel_test_file():
-    """Crée un DataFrame de démonstration Labo (format croisé) et le renvoie sous forme binaire."""
-    today_str = pd.Timestamp(date.today()).strftime("%d.%m.%Y")
-    data = {
-        'nom': ['Hémoglobine', 'Sodium', 'Créatinine'],
-        'seuil': ['120 - 160 g/l', '135 - 145 mmol/l', '60 - 110 µmol/l'],
-        today_str: [150, 140, 85],
-        (pd.Timestamp(date.today()) - pd.Timedelta(days=7)).strftime("%d.%m.%Y"): [115, 133, 120],
-        (pd.Timestamp(date.today()) - pd.Timedelta(days=14)).strftime("%d.%m.%Y"): [155, 142, 70]
-    }
-    df_test = pd.DataFrame(data)
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        df_test.to_excel(writer, index=False, sheet_name='Labo')
-    return output.getvalue()
-
-
 def pivot_lab_data(df_lab: pd.DataFrame) -> pd.DataFrame:
     """
     Transforme le DataFrame Labo (format croisé) en format long pour Plotly Timeline.
+    Utilise les colonnes 'dosage', 'unite', 'seuil_min', 'seuil_max' comme identifiants.
     """
     if df_lab.empty:
         return pd.DataFrame()
 
-    id_vars = ['nom', 'seuil']
+    # 1. Préparation des colonnes d'identification
+    id_vars = ['dosage', 'unite', 'seuil_min', 'seuil_max']
 
-    # Nettoyage des colonnes Labo
-    df_lab.columns = df_lab.columns.str.lower().str.replace('[^a-z0-9_.]', '', regex=True)
+    missing_cols = [col for col in id_vars if col not in df_lab.columns]
 
-    if not all(col in df_lab.columns for col in id_vars):
+    if missing_cols:
+        st.warning(
+            f"Fichier Labo invalide: Colonnes manquantes. Requises: {', '.join(id_vars)}. Manquantes: {', '.join(missing_cols)}."
+        )
         return pd.DataFrame()
 
+    # 2. Identification des colonnes de valeur (dates)
     value_vars = [col for col in df_lab.columns if col not in id_vars]
+
     if not value_vars:
+        st.warning("Aucune colonne de date (valeurs) n'a été trouvée dans le fichier Labo.")
         return pd.DataFrame()
 
-    # Transformation du format "large" au format "long"
+    # 3. Transformation du format "large" au format "long"
     df_long = df_lab.melt(
         id_vars=id_vars,
         value_vars=value_vars,
-        var_name='date_mesure',
+        var_name='date_mesure_raw',
         value_name='valeur'
     ).dropna(subset=['valeur'])
 
-    # Conversion des colonnes
-    df_long['date_mesure'] = pd.to_datetime(df_long['date_mesure'], format='%d.%m.%Y', errors='coerce')
+    # 4. Conversion des colonnes
     df_long['valeur'] = pd.to_numeric(df_long['valeur'], errors='coerce')
 
-    # Nettoyage final
-    df_long.rename(columns={'nom': 'dci'}, inplace=True)
+    # Fonction de parsing de date FLEXIBLE et ROBUSTE (CORRECTION MAJEURE ICI)
+    def parse_flexible_date(date_str):
+        date_str = str(date_str).strip()
+        if not date_str:
+            return pd.NaT
+
+        # Tentative 1 (Meilleure): Inférence de format (gère AAAA-MM-JJ HH:MM:SS)
+        try:
+            return pd.to_datetime(date_str, errors='raise', infer_datetime_format=True)
+        except:
+            # Tentative 2: Format explicite du dernier fichier (DD.MM.AAAA HH:MM:SS)
+            try:
+                return pd.to_datetime(date_str, format='%d.%m.%Y %H:%M:%S', errors='raise')
+            except:
+                return pd.NaT
+
+                # Assurez-vous que la colonne brute est une string avant l'application de la fonction
+
+    df_long['date_mesure'] = df_long['date_mesure_raw'].astype(str).apply(parse_flexible_date)
+    df_long.drop(columns=['date_mesure_raw'], inplace=True)
+
+    # Vérification après parsing de date
     df_long.dropna(subset=['date_mesure', 'valeur'], inplace=True)
 
-    # Préparation pour la fusion
+    if df_long.empty:
+        st.error(
+            "Après le parsing des dates, le tableau est vide. Vérifiez le format des dates dans les en-têtes de colonnes.")
+        return pd.DataFrame()
+
+    # 5. Préparation des données pour la visualisation et détection des hors-normes
+
+    df_long.rename(columns={'dosage': 'dci'}, inplace=True)
+
+    df_long['frequence'] = ""
+    df_long['seuil_range'] = ""
+    df_long['outlier_status'] = 0
+
+    # Conversion des seuils: Conversion robuste (remplacement des virgules par des points)
+    df_long['seuil_min_val'] = pd.to_numeric(df_long['seuil_min'].astype(str).str.replace(',', '.'), errors='coerce')
+    df_long['seuil_max_val'] = pd.to_numeric(df_long['seuil_max'].astype(str).str.replace(',', '.'), errors='coerce')
+
+    valid_seuil_mask = ~df_long['seuil_min_val'].isna() & ~df_long['seuil_max_val'].isna()
+
+    if valid_seuil_mask.any():
+
+        # Détection des valeurs hors-normes
+        low_mask = valid_seuil_mask & (df_long['valeur'] < df_long['seuil_min_val'])
+        df_long.loc[low_mask, 'outlier_status'] = -1
+
+        high_mask = valid_seuil_mask & (df_long['valeur'] > df_long['seuil_max_val'])
+        df_long.loc[high_mask, 'outlier_status'] = 1
+
+        # df_long['frequence'] = df_long['outlier_status'].apply(
+        #     lambda x: "⚠️ Élevé" if x == 1 else ("⚠️ Bas" if x == -1 else "Mesure unique")
+        # )
+
+        df_long['seuil_range'] = (
+                "Seuil: [" + df_long['seuil_min'].astype(str) + " - " + df_long['seuil_max'].astype(str) + "]"
+        )
+    else:
+        # st.warning a été déplacé avant le retour de DataFrame vide
+        pass
+
     df_long['dose'] = df_long['valeur']
-    df_long['unite'] = df_long['seuil'].astype(str).str.extract(r'([a-z\/]+)$', expand=False).fillna('')
-    df_long['frequence'] = "Mesure unique"
     df_long['ei'] = "Non"
     df_long['is_lab'] = True
 
-    # Pour l'affichage "Timeline", on utilise la date_mesure comme date_debut et date_fin
     df_long['date_debut'] = df_long['date_mesure']
-    df_long['date_fin'] = df_long['date_mesure'] + pd.Timedelta(days=0.1)  # Durée minimale pour être visible
+    df_long['date_fin'] = df_long['date_mesure'] + pd.Timedelta(days=0.1)
 
-    final_cols = ['dci', 'dose', 'frequence', 'date_debut', 'date_fin', 'unite', 'ei', 'is_lab']
-    return df_long[final_cols]
+    final_cols = ['dci', 'dose', 'frequence', 'date_debut', 'date_fin', 'unite', 'ei', 'is_lab', 'seuil_range', 'seuil_min_val', 'seuil_max_val', 'outlier_status']
 
+    return df_long[[col for col in final_cols if col in df_long.columns]]
+
+
+def get_lab_color(val, seuil_min, seuil_max):
+    """
+    Retourne une couleur en fonction de la valeur par rapport aux seuils.
+    - Vert si normal
+    - Gradient orange->rouge si en dehors
+    """
+    if pd.isna(val) or pd.isna(seuil_min) or pd.isna(seuil_max):
+        return "#C3DDE9"  # couleur neutre si données manquantes
+
+    if seuil_min <= val <= seuil_max:
+        return "#6FCF97"  # vert
+
+    # si en dessous du min
+    if val < seuil_min:
+        # normalisation de l’écart (0 à 1)
+        diff = (seuil_min - val) / seuil_min
+    else:
+        # si au-dessus du max
+        diff = (val - seuil_max) / seuil_max
+
+    # clamp entre 0 et 1 pour éviter les valeurs extrêmes
+    diff = min(diff, 1.0)
+
+    # définir un colormap du orange au rouge
+    cmap = mcolors.LinearSegmentedColormap.from_list("", ["#FFA500", "#FF0000"])
+    return mcolors.to_hex(cmap(diff))
 
 # --- Fonction pour la page 1: Upload ---
 def show_upload_page():
@@ -150,15 +189,6 @@ def show_upload_page():
         uploaded_file_dci = st.file_uploader("Choisir fichier Excel/CSV (DCI/EI)", type=["xlsx", "csv"],
                                              key="uploaded_dci_ei")
 
-    with col_dci_example:
-        dci_excel_data = get_dci_excel_test_file()
-        if dci_excel_data is not None:
-            st.download_button(
-                label="Télécharger exemple DCI (.xlsx)",
-                data=dci_excel_data,
-                file_name="test_chrono_dci.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
     st.markdown("---")
 
     # --- UPLOAD LABO ---
@@ -169,15 +199,6 @@ def show_upload_page():
         uploaded_file_lab = st.file_uploader("Choisir fichier Excel/CSV (Labo - Format croisé)", type=["xlsx", "csv"],
                                              key="uploaded_lab")
 
-    with col_lab_example:
-        lab_excel_data = get_lab_excel_test_file()
-        if lab_excel_data is not None:
-            st.download_button(
-                label="Télécharger exemple Labo (.xlsx)",
-                data=lab_excel_data,
-                file_name="test_chrono_labo.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
     st.markdown("---")
 
     # --- Traitement des fichiers après l'upload ---
@@ -194,11 +215,18 @@ def show_upload_page():
             df_dci.columns = df_dci.columns.str.lower().str.replace('[^a-z0-9_]', '', regex=True).str.replace(' ', '_',
                                                                                                               regex=True)
             required_cols = ['dci', 'dose', 'frequence', 'date_debut', 'date_fin', 'unite', 'ei']
+            print(f"DCI DF = {df_dci}")
 
             if not all(col in df_dci.columns for col in required_cols):
                 st.warning(f"Fichier DCI/EI invalide : Colonnes manquantes. Requises : {', '.join(required_cols)}")
                 st.session_state.df_dci_ei = pd.DataFrame()
             else:
+                # CORRECTION: Assure que la conversion en minuscule s'applique à toutes les entrées
+                df_dci['dci'] = df_dci.apply(
+                    lambda row: row['dci'].strip().lower() if str(row.get('ei', '')).strip().lower() != 'oui' else row['dci'],
+                    axis=1
+                )
+
                 df_dci['is_lab'] = False
                 st.session_state.df_dci_ei = df_dci.copy()
 
@@ -229,7 +257,7 @@ def show_upload_page():
 
             if st.session_state.df_lab.empty:
                 st.warning(
-                    "Le fichier Labo est vide ou le format est incorrect. Vérifiez les colonnes 'nom', 'seuil' et les colonnes de date.")
+                    "Le fichier Labo est vide ou le format est incorrect. Vérifiez les colonnes 'dosage', 'seuil_min', 'seuil_max' et les colonnes de date.")
             else:
                 st.success(f"Fichier Labo chargé : {len(st.session_state.df_lab)} mesures.")
 
@@ -435,11 +463,17 @@ def show_visualization_page():
             color_map[dci] = base_colors[i % len(base_colors)]
 
         # Couleurs Labo
-        lab_color = "#C3DDE9"
-        for lab in labs:
-            color_map["🧪 " + lab] = lab_color
+        #lab_color = "#C3DDE9"
 
-            # Couleurs EI
+        # --- Couleurs dynamiques Labos ---
+        for lab in lab_only_df['dci'].unique():
+            lab_rows = df_filtered['y_position'] == "🧪 " + lab
+            df_filtered.loc[lab_rows, 'color_lab'] = df_filtered.loc[lab_rows].apply(
+                lambda r: get_lab_color(r['dose'], r['seuil_min_val'], r['seuil_max_val']),
+                axis=1
+            )
+
+        # Couleurs EI
         ei_color = "#f4a6c1"
         for ei in ei_names:
             color_map["⚠️ " + ei] = ei_color
@@ -475,9 +509,8 @@ def show_visualization_page():
             x_start="date_debut_plot",
             x_end="date_fin_plot",
             y="y_position",
-            # color="y_position" pour que le regroupement des barres se fasse par la catégorie affichée
-            color="y_position",
-            color_discrete_map=color_map,
+            color="y_position", #  pour que le regroupement des barres se fasse par la catégorie affichée, on garde pour EI et DCI
+            color_discrete_map=color_map, # map pour DCI et EI
             hover_name="y_position",
             # category_orders pour le tri des libellés Y
             category_orders={"y_position": y_order_desired},
@@ -551,7 +584,8 @@ def show_visualization_page():
             margin=dict(t=120, b=50, l=50, r=50),
             showlegend=False,
             title=dict(x=0.5, xanchor='center'),
-            yaxis=dict(autorange="reversed")  # corrige l’ordre haut/bas
+            yaxis=dict(autorange="reversed", # corrige l’ordre haut/bas
+                       title = '') # enlever y_position comme titre du graphique sur axe des y
         )
         fig.update_xaxes(range=[date_start_ts, display_end_inclusive],
                          tickformat="%d %b %Y",
@@ -638,6 +672,10 @@ def show_visualization_page():
                     trace.marker.opacity = trace_df['Dose_Normalized'].tolist()
                 except:
                     trace.marker.opacity = float(trace_df['Dose_Normalized'].mean())
+
+            if "🧪" in trace.name:  # ou le nom exact des labos
+                mask = df_filtered['y_position'] == trace.name
+                trace.marker.color = df_filtered.loc[mask, 'color_lab'].tolist()
 
             trace.width = 0.8
             # customdata est basé sur le trace_df filtré par y_position, garantissant le bon contenu
